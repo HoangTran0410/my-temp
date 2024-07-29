@@ -76,7 +76,118 @@ export async function getUserVideo({ id = "", cursor = "" }) {
   return { videos, nextCursor: page_info?.end_cursor };
 }
 
-// `https://graph.facebook.com/v14.0/${id}?fields=videos.limit(100)${after ? `.after(${after})` : ''}{created_time,description,id,length,post_id,source,picture}&access_token=${accessToken}`
+// #region photos
+
+export async function getUserPhotos({ id, count = 8, cursor = "" }) {
+  const res = await fetchGraphQl({
+    doc_id: "4820192058049838",
+    fb_api_caller_class: "RelayModern",
+    fb_api_req_friendly_name:
+      "ProfileCometAppCollectionPhotosRendererPaginationQuery",
+    variables: {
+      count: count,
+      cursor: cursor,
+      scale: 1,
+      id: btoa(`app_collection:${id}:2305272732:5`),
+    },
+  });
+  const json = JSON.parse(res);
+  const { edges = [], page_info } = json?.data?.node?.pageItems || {};
+  return {
+    photos: edges.map((edge) => ({
+      id: atob(edge?.node?.id).split(":").pop(),
+      url: edge?.node?.url,
+      thumbnail: edge?.node?.image?.uri,
+      image: edge?.node?.node?.viewer_image?.uri,
+      width: edge?.node?.node?.viewer_image?.width,
+      height: edge?.node?.node?.viewer_image?.height,
+      accessibility_caption: edge?.node?.node?.accessibility_caption,
+      cursor: edge?.cursor,
+    })),
+    page_info,
+  };
+}
+
+export async function getGroupPhotos({ id, count = 8, cursor = "" }) {
+  const res = await fetchGraphQl({
+    doc_id: "6022153214500431",
+    fb_api_caller_class: "RelayModern",
+    fb_api_req_friendly_name: "GroupsCometMediaPhotosTabGridQuery",
+    variables: {
+      count: count,
+      cursor: cursor,
+      scale: 1,
+      id: id,
+    },
+  });
+  const json = JSON.parse(res);
+  const { edges = [], page_info } =
+    json?.data?.node?.group_mediaset?.media || {};
+  return {
+    photos: edges.map((edge) => ({
+      id: edge?.node?.id,
+      url: edge?.node?.url,
+      thumbnail: edge?.node?.image?.uri,
+      image: edge?.node?.viewer_image?.uri,
+      width: edge?.node?.viewer_image?.width,
+      height: edge?.node?.viewer_image?.height,
+      accessibility_caption: edge?.node?.accessibility_caption,
+      cursor: edge?.cursor,
+    })),
+    page_info,
+  };
+}
+
+export async function getLargestPhoto(photoId) {
+  const res = await fetchGraphQl({
+    fb_api_req_friendly_name: "CometPhotoRootContentQuery",
+    variables: {
+      UFI2CommentsProvider_commentsKey: "CometPhotoRootQuery",
+      feedbackSource: 65,
+      feedLocation: "COMET_MEDIA_VIEWER",
+      isMediaset: false,
+      // mediasetToken:
+      //     // group = g, user = t, page = pb
+      //     (targetType === 'group' ? 'g' : targetType === 'page' ? 'pb' : 't') +
+      //     '.' +
+      //     targetId,
+      nodeID: photoId,
+      privacySelectorRenderLocation: "COMET_MEDIA_VIEWER",
+      renderLocation: "permalink",
+      scale: 2,
+      useDefaultActor: false,
+      useHScroll: false,
+
+      // optional
+      focusCommentID: null,
+      displayCommentsContextEnableComment: null,
+      displayCommentsContextIsAdPreview: null,
+      displayCommentsContextIsAggregatedShare: null,
+      displayCommentsContextIsStorySet: null,
+      displayCommentsFeedbackContext: null,
+      __relay_internal__pv__CometUFIReactionEnableShortNamerelayprovider: true,
+      __relay_internal__pv__CometUFIShareActionMigrationrelayprovider: false,
+      __relay_internal__pv__CometUFIReactionsEnableShortNamerelayprovider: false,
+      __relay_internal__pv__CometImmersivePhotoCanUserDisable3DMotionrelayprovider: false,
+    },
+    doc_id: "7830475950340566",
+  });
+  const json = JSON.parse(res?.split("\n")?.[0] || "{}");
+  const media = json?.data?.currMedia || {};
+  return {
+    id: photoId,
+    url: media.creation_story?.url,
+    accessibility_caption: media.accessibility_caption,
+    image: media.image.uri,
+    width: media.image.width,
+    height: media.image.height,
+    thumbnail: media.image.uri,
+  };
+}
+
+// #endregion
+
+// #region videos
 export async function getGroupVideo({ id = "", cursor = "" }) {
   const videos = [];
   const res = await fetchGraphQl({
@@ -155,6 +266,57 @@ export async function getVideoInfo(videoId) {
     thumbnail: videoInfo.preferred_thumbnail?.image?.uri,
   };
 }
+// #endregion
+
+// #region reels
+
+export async function getUserReels({ id = "", cursor = "" }) {
+  const res = await fetchGraphQl({
+    fb_api_req_friendly_name:
+      "ProfileCometAppCollectionReelsRendererPaginationQuery",
+    variables: {
+      count: 10,
+      cursor: cursor,
+      feedLocation: "COMET_MEDIA_VIEWER",
+      feedbackSource: 65,
+      focusCommentID: null,
+      renderLocation: null,
+      scale: 1,
+      useDefaultActor: true,
+      id: btoa("app_collection:" + id + ":168684841768375:260"),
+    },
+    doc_id: "7821270511254925",
+  });
+
+  const json = JSON.parse(res?.split("\n")?.[0] || "{}");
+  const { edges = [], page_info = {} } =
+    json?.data?.node?.aggregated_fb_shorts || {};
+
+  return edges.map((edge) => {
+    const short_form_video_context =
+      edge?.profile_reel_node?.node?.short_form_video_context || {};
+
+    return {
+      id:
+        edge?.profile_reel_node?.node?.video?.id ||
+        atob(edge?.profile_reel_node?.id).split(":").pop(),
+      created_time: edge?.profile_reel_node?.node?.creation_time,
+      description: edge?.profile_reel_node?.node?.message?.text,
+      viewCount: short_form_video_context?.play_count_reduced,
+      source:
+        short_form_video_context?.playback_video?.browser_native_hd_url ||
+        short_form_video_context?.playback_video?.browser_native_sd_url,
+      height: short_form_video_context?.playback_video?.height,
+      width: short_form_video_context?.playback_video?.width,
+      thumbnail: short_form_video_context?.playback_video?.image?.uri,
+      url: short_form_video_context?.shareable_url,
+      length: short_form_video_context?.playback_video?.length_in_second,
+      cursor: edge?.cursor || page_info.end_cursor,
+    };
+  });
+}
+
+// #endregion
 
 export async function getFbDtsg() {
   if (CACHED.fb_dtsg) return CACHED.fb_dtsg;

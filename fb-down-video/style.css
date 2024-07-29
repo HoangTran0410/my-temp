@@ -2,6 +2,7 @@
     margin: 0;
     padding: 0;
     box-sizing: border-box;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
 html {
@@ -16,6 +17,13 @@ body {
     justify-content: center;
     align-items: center;
     flex-direction: column;
+    overflow-x: hidden;
+}
+
+button,
+select,
+input {
+    padding: 5px 10px;
 }
 
 .row {
@@ -40,7 +48,7 @@ body {
     width: max-content;
 }
 
-#videos {
+#container {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
@@ -49,12 +57,13 @@ body {
     margin-top: 20px;
 }
 
-.video {
+.video,
+.photo {
     width: 200px;
     height: 200px;
 }
 
-.video img {
+:is(.video, .photo) img {
     width: 100%;
     height: 100%;
     object-fit: cover;

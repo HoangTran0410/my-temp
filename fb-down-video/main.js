@@ -5,37 +5,82 @@ import {
   TargetType,
   getVideoInfo,
   download,
+  getUserPhotos,
+  getGroupPhotos,
+  getLargestPhoto,
+  getUserReels,
 } from "./facebook.js";
 import { elementInViewport, promiseAllStepN } from "./utils.js";
 
+const Tabs = {
+  Photos: "Photos",
+  Videos: "Videos",
+  Reels: "Reels",
+};
+
 const CACHED = {
   about: null,
-  videos: [],
+  tab: Tabs.Photos,
+  data: [],
 
   fetchingNext: false,
+  hasMore: true,
 };
 
 const inputId = document.querySelector("input");
 const searchBtn = document.getElementById("search");
 const downloadBtn = document.getElementById("download");
 const aboutDiv = document.getElementById("about");
-const videosDiv = document.getElementById("videos");
+const containerDiv = document.getElementById("container");
 const triggerDiv = document.getElementById("trigger");
+const tabsSelect = document.getElementById("tabs");
+const noDataDiv = document.getElementById("no-data");
 
 downloadBtn.addEventListener("click", onDownload);
 searchBtn.addEventListener("click", onSearch);
+
+// set value for select tabs
+Object.values(Tabs).forEach((value) => {
+  tabsSelect.innerHTML += `<option value="${value}">${value}</option>`;
+});
+tabsSelect.value = CACHED.tab;
+tabsSelect.addEventListener("change", (e) => {
+  CACHED.tab = e.target.value;
+  // clear old data
+  CACHED.data = [];
+  renderData([], true);
+});
 
 // auto fetch next
 setInterval(async () => {
   const isInViewPort = elementInViewport(triggerDiv);
   if (CACHED.about && !CACHED.fetchingNext && isInViewPort) {
-    const videos = await fetchNext();
-    if (videos?.length) {
-      CACHED.videos.push(...videos);
-      renderVideos(videos, false);
+    const data = await fetchNext();
+    if (data?.length) {
+      CACHED.data.push(...data);
+      renderData(data, false);
     }
+    let hasMore = data?.length > 0;
+    if (!hasMore) noDataDiv.innerHTML = "No more data";
   }
 }, 1000);
+
+async function onSearch() {
+  Swal.fire({
+    title: "Đang tải",
+    text: "Đang lấy thông tin id facebook",
+    didOpen: () => {
+      Swal.showLoading();
+    },
+  });
+  const id = inputId.value;
+  const about = await getEntityAbout(id);
+  console.log(about);
+  CACHED.about = about;
+  renderAbout(about);
+  renderData([], true); // clear old data
+  Swal.close();
+}
 
 async function onDownload() {
   if (!CACHED.about) {
@@ -54,7 +99,33 @@ async function onDownload() {
     });
   }
 
-  const collectionName = "fb_videos_" + CACHED.about.name;
+  const collectionName = "fb_" + CACHED.tab + "_" + CACHED.about.name;
+  const getDownloadInfo =
+    CACHED.tab === Tabs.Photos
+      ? // Photos
+        async (item) => {
+          if (!item.image) {
+            const photo = await getLargestPhoto(item.id);
+            item.image = photo?.image;
+          }
+          return { url: item.image, name: item.id + ".jpg" };
+        }
+      : // Videos
+      CACHED.tab === Tabs.Videos
+      ? async (item) => {
+          if (!item.source) {
+            const video = await getVideoInfo(item.id);
+            item.source = video?.source;
+          }
+          return { url: item.source, name: item.id + ".mp4" };
+        }
+      : // Reels
+        async (item) => {
+          return {
+            url: item.source,
+            name: item.id + ".mp4",
+          };
+        };
 
   const dirHandler = await window.showDirectoryPicker({ mode: "readwrite" });
   await dirHandler.requestPermission({ writable: true });
@@ -67,8 +138,9 @@ async function onDownload() {
     title: "Downloading...",
     text: CACHED.about.name,
     didOpen: () => Swal.showLoading(),
+    allowOutsideClick: false,
   });
-  const all = [...CACHED.videos];
+  const all = [...CACHED.data];
   let downloaded = 0,
     failed = 0,
     downloadedByApi = 0,
@@ -85,19 +157,11 @@ async function onDownload() {
     const arr = all.slice(index);
     if (!arr.length) break;
 
-    const { start, stop: stopQueue } = promiseAllStepN(
+    const { start, stop } = promiseAllStepN(
       10,
-      arr.map((video, i) => async () => {
+      arr.map((item, i) => async () => {
         try {
-          let url = video.source,
-            name = video.id + ".mp4";
-
-          if (!url) {
-            const videoInfo = await getVideoInfo(video.id);
-            url = videoInfo.source;
-            name = videoInfo.id + ".mp4";
-          }
-
+          const { url, name } = await getDownloadInfo(item);
           const fileNamePrefix = index + i + "_";
           const fileName = fileNamePrefix + name;
 
@@ -153,47 +217,96 @@ async function onDownload() {
   });
 }
 
-async function onSearch() {
-  Swal.fire({
-    title: "Đang tải",
-    text: "Đang lấy thông tin id facebook",
-    didOpen: () => {
-      Swal.showLoading();
-    },
-  });
-  const id = inputId.value;
-  // TODO get info and video
-  const about = await getEntityAbout(id);
-  console.log(about);
-  CACHED.about = about;
-  renderAbout(about);
-
-  Swal.fire({
-    title: "Đang tải",
-    text: "Đang lấy thông tin videos của " + about.name,
-    didOpen: () => {
-      Swal.showLoading();
-    },
-  });
-
-  CACHED.videos = await fetchNext();
-  console.log(CACHED.videos);
-  renderVideos(CACHED.videos, true);
-
-  Swal.close();
-}
-
-async function fetchNext(
-  cursor = CACHED.videos[CACHED.videos.length - 1]?.cursor || ""
-) {
+async function fetchNext(cursor) {
   if (CACHED.fetchingNext) return;
   CACHED.fetchingNext = true;
-  const res =
-    CACHED.about?.type === TargetType.Group
-      ? await getGroupVideo({ id: CACHED.about?.id, cursor })
-      : await getUserVideo({ id: CACHED.about?.id, cursor });
-  CACHED.fetchingNext = false;
-  return res.videos;
+
+  noDataDiv.innerHTML = "Fetching..";
+
+  let data, res;
+  try {
+    cursor = cursor || CACHED.data[CACHED.data.length - 1]?.cursor || "";
+
+    // fetch photos
+    if (CACHED.tab === Tabs.Photos) {
+      res =
+        CACHED.about?.type === TargetType.Group
+          ? await getGroupPhotos({ id: CACHED.about?.id, cursor })
+          : await getUserPhotos({ id: CACHED.about?.id, cursor });
+      data = res.photos;
+    }
+
+    // fetch videos
+    if (CACHED.tab === Tabs.Videos) {
+      res =
+        CACHED.about?.type === TargetType.Group
+          ? await getGroupVideo({ id: CACHED.about?.id, cursor })
+          : await getUserVideo({ id: CACHED.about?.id, cursor });
+      data = res.videos;
+    }
+
+    // fetch reels
+    if (CACHED.tab === Tabs.Reels) {
+      res = await getUserReels({ id: CACHED.about?.id, cursor });
+      data = res;
+    }
+  } catch (e) {
+    Swal.fire({
+      icon: "error",
+      title: "Error fetchNext",
+      text: e.message,
+    });
+  } finally {
+    CACHED.fetchingNext = false;
+  }
+
+  return data;
+}
+
+function renderData(data, override = false) {
+  if (override) {
+    containerDiv.innerHTML = "";
+  }
+
+  if (CACHED.tab === Tabs.Photos) {
+    containerDiv.innerHTML += data
+      .map(
+        (img) => /*html*/ `
+      <div class="photo">
+        <img
+          src="${img.image || img.thumbnail}"
+          data-source="${img.image || ""}"
+          data-id="${img.id}" />
+      </div>`
+      )
+      .join("");
+  }
+  if (CACHED.tab === Tabs.Videos) {
+    containerDiv.innerHTML += data
+      .map(
+        (video) => /*html*/ `
+      <div class="video">
+        <img
+          src="${video.picture}"
+          data-source="${video.source || ""}"
+          data-id="${video.id}" />
+      </div>`
+      )
+      .join("");
+  }
+  if (CACHED.tab === Tabs.Reels) {
+    containerDiv.innerHTML += data
+      .map(
+        (reel) => /*html*/ `
+      <div class="video">
+        <img
+          src="${reel.thumbnail}"
+          data-source="${reel.source || ""}"
+          data-id="${reel.id}" />
+      </div>`
+      )
+      .join("");
+  }
 }
 
 function renderAbout(about) {
@@ -210,24 +323,29 @@ function renderAbout(about) {
     `;
 }
 
-function renderVideos(videos, override = false) {
-  if (override) {
-    videosDiv.innerHTML = "";
-  }
-  videosDiv.innerHTML += /*html*/ `
-    ${videos
-      .map(
-        (video) => /*html*/ `
-            <div class="video">
-                <img src="${video.picture}" data-source="${video.source}" data-id="${video.id}" />
-            </div>
-        `
-      )
-      .join("")}
-    `;
-}
-
 window.addEventListener("click", async (e) => {
+  // on click photo
+  if (e.target.matches(".photo img")) {
+    const source = e.target.getAttribute("data-source");
+    const id = e.target.getAttribute("data-id");
+
+    if (source) {
+      window.open(source, "_blank");
+    } else {
+      Swal.fire({
+        title: "Đang tải",
+        text: "Đang lấy thông tin ảnh",
+        didOpen: () => {
+          Swal.showLoading();
+        },
+      });
+      const img = await getLargestPhoto(id);
+      console.log(img);
+      window.open(img.image, "_blank");
+      Swal.close();
+    }
+  }
+
   // on click video
   if (e.target.matches(".video img")) {
     const source = e.target.getAttribute("data-source");
@@ -243,14 +361,9 @@ window.addEventListener("click", async (e) => {
           Swal.showLoading();
         },
       });
+
       const videoInfo = await getVideoInfo(id);
       console.log(videoInfo);
-
-      // update back to CACHED
-      const exist = CACHED.videos.find((v) => v.id === videoInfo.id);
-      if (exist) {
-        exist.source = videoInfo.source;
-      }
       window.open(videoInfo.source, "_blank");
 
       Swal.close();
